@@ -1,0 +1,1492 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AVE Studio</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Component scripts MUST load before Alpine so window.briefBuilder,
+       window.progressView, window.videoPlayer, and window.reviewChart are
+       registered before Alpine.start() scans the DOM. All use `defer`,
+       which executes in document order -- Alpine CDN comes last so the
+       registrations are guaranteed to exist by the time Alpine walks the
+       DOM. Chart.js is loaded from the jsDelivr CDN before Alpine so
+       `window.Chart` exists when reviewChart()'s init() runs. -->
+  <script defer src="/static/js/brief-builder.js"></script>
+  <script defer src="/static/js/progress.js"></script>
+  <script defer src="/static/js/video-player.js"></script>
+  <script defer src="/static/js/review-chart.js"></script>
+  <script defer src="/static/js/chat.js"></script>
+  <script defer src="/static/js/timeline.js"></script>
+  <script defer src="/static/js/edit-controls.js"></script>
+  <script defer src="/static/js/re-render.js"></script>
+  <script defer src="/static/js/shot-browser.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <!--
+    Shared Alpine root — owns view state and the currently-watched job id.
+    Design note: we keep `view` + `currentJobId` on the root (not on a
+    custom event bus) so nested components (brief-builder, progress view)
+    can read and write them directly through Alpine's scope inheritance.
+    This avoids $dispatch round-tripping through the DOM and keeps the
+    "which job is the progress view showing?" answer in one place.
+  -->
+  <!--
+    Shared root scope. `promotedJobId` tracks the last brief-builder job we
+    already forwarded into `currentJobId` — it lets progressView clear
+    `currentJobId` on terminal state without the x-effect below
+    immediately re-promoting the same finished job.
+  -->
+  <main x-data="{ view: 'brief-builder', currentJobId: '', promotedJobId: '' }" class="mx-auto max-w-5xl p-6">
+    <header class="mb-8">
+      <h1 class="text-3xl font-bold">AVE Studio</h1>
+      <p class="text-slate-400">Agentic Video Editor — brief, preview, pointed edits.</p>
+    </header>
+
+    <nav class="mb-6 flex flex-wrap gap-2 text-sm">
+      <button type="button" class="rounded bg-slate-800 px-3 py-1 hover:bg-slate-700" @click="view = 'brief-builder'">Brief</button>
+      <button type="button" class="rounded bg-slate-800 px-3 py-1 hover:bg-slate-700" @click="view = 'progress'">Progress</button>
+      <button type="button" class="rounded bg-slate-800 px-3 py-1 hover:bg-slate-700" @click="view = 'review'">Review</button>
+      <button type="button" class="rounded bg-slate-800 px-3 py-1 hover:bg-slate-700" @click="view = 'chat'">Chat</button>
+      <button type="button" class="rounded bg-slate-800 px-3 py-1 hover:bg-slate-700" @click="view = 'timeline'">Timeline</button>
+    </nav>
+
+    <section x-show="view === 'brief-builder'" class="space-y-4">
+      <!--
+        Bridge from the briefBuilder's private `lastJobId` into the
+        root-level `currentJobId` + view transition. `x-effect` runs
+        whenever any reactive dependency in its expression changes, so
+        the moment brief-builder's submit() assigns `lastJobId`, we
+        promote it into the shared scope and flip the view. Using
+        `x-effect` (instead of editing brief-builder.js) keeps US-004's
+        implementation untouched while still satisfying the US-005 AC
+        that Queue job → Run transitions the view.
+
+        Note: we gate the promotion on `lastJobId !== promotedJobId`
+        (not `!== currentJobId`). progressView clears `currentJobId` on
+        terminal state so the Run button re-enables — if we keyed on
+        `currentJobId` here, the effect would immediately re-promote the
+        finished job and re-lock the button. `promotedJobId` is set once
+        per real brief-builder submit and never cleared, so the effect
+        only fires when a NEW job id appears.
+
+        Note: `x-init` is intentionally omitted — Alpine v3 calls any
+        `init()` method on the component automatically during its mount
+        phase, so an explicit `x-init="init()"` would invoke it twice.
+      -->
+      <div
+        x-data="briefBuilder()"
+        x-effect="
+          if (lastJobId && lastJobId !== promotedJobId) {
+            promotedJobId = lastJobId;
+            currentJobId = lastJobId;
+            view = 'progress';
+          }
+        "
+        class="space-y-6"
+      >
+        <header class="space-y-1">
+          <h2 class="text-xl font-semibold">Brief Builder</h2>
+          <p class="text-slate-400">Describe the spot, pick a pipeline, and queue a job.</p>
+        </header>
+
+        <template x-if="loadingOptions">
+          <p class="text-sm text-slate-400" aria-live="polite">Loading form options&hellip;</p>
+        </template>
+
+        <template x-if="error">
+          <div role="alert" class="rounded border border-red-700 bg-red-950/60 px-3 py-2 text-sm text-red-200" x-text="error"></div>
+        </template>
+
+        <template x-if="lastJobId">
+          <div role="status" aria-live="polite" class="rounded border border-emerald-700 bg-emerald-950/60 px-3 py-2 text-sm text-emerald-200">
+            Job <span class="font-mono" x-text="lastJobId"></span> queued.
+          </div>
+        </template>
+
+        <form class="space-y-5" @submit.prevent="submit()" novalidate>
+          <div class="space-y-1">
+            <label for="brief-product" class="block text-sm font-medium text-slate-200">Product</label>
+            <input
+              id="brief-product"
+              type="text"
+              required
+              x-model="brief.product"
+              placeholder="e.g. SleepWell weighted blanket"
+              class="w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100 placeholder-slate-500 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+            />
+          </div>
+
+          <div class="space-y-1">
+            <label for="brief-audience" class="block text-sm font-medium text-slate-200">Audience</label>
+            <input
+              id="brief-audience"
+              type="text"
+              required
+              x-model="brief.audience"
+              placeholder="e.g. Stressed millennial professionals"
+              class="w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100 placeholder-slate-500 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+            />
+          </div>
+
+          <div class="space-y-1">
+            <label for="brief-tone" class="block text-sm font-medium text-slate-200">Tone</label>
+            <input
+              id="brief-tone"
+              type="text"
+              required
+              x-model="brief.tone"
+              placeholder="e.g. Warm, conversational, aspirational"
+              class="w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100 placeholder-slate-500 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+            />
+          </div>
+
+          <div class="space-y-2">
+            <div class="flex items-center justify-between">
+              <label for="brief-duration" class="block text-sm font-medium text-slate-200">Duration</label>
+              <span class="text-sm tabular-nums text-slate-300">
+                <span x-text="brief.duration_seconds"></span>s
+              </span>
+            </div>
+            <input
+              id="brief-duration"
+              type="range"
+              :min="durationMin"
+              :max="durationMax"
+              step="1"
+              x-model.number="brief.duration_seconds"
+              class="w-full accent-emerald-500"
+              aria-label="Duration in seconds"
+            />
+            <div class="flex justify-between text-xs text-slate-500">
+              <span x-text="durationMin + 's'"></span>
+              <span x-text="durationMax + 's'"></span>
+            </div>
+          </div>
+
+          <div class="space-y-1">
+            <label for="brief-style" class="block text-sm font-medium text-slate-200">
+              Style preset <span class="text-slate-500">(optional)</span>
+            </label>
+            <select
+              id="brief-style"
+              x-model="brief.style_ref"
+              :disabled="loadingOptions || styles.length === 0"
+              class="w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 disabled:opacity-60"
+            >
+              <option value="" selected x-text="loadingOptions ? 'Loading styles\u2026' : (styles.length === 0 ? 'No styles available' : '\u2014 none \u2014')"></option>
+              <template x-for="entry in styles" :key="entry.path">
+                <option :value="entry.path" x-text="entry.name"></option>
+              </template>
+            </select>
+          </div>
+
+          <div class="space-y-1">
+            <label for="brief-pipeline" class="block text-sm font-medium text-slate-200">Pipeline</label>
+            <select
+              id="brief-pipeline"
+              required
+              x-model="pipeline_path"
+              :disabled="loadingOptions || pipelines.length === 0"
+              class="w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 disabled:opacity-60"
+            >
+              <option value="" disabled selected x-text="loadingOptions ? 'Loading pipelines\u2026' : (pipelines.length === 0 ? 'No pipelines available' : 'Select a pipeline\u2026')"></option>
+              <template x-for="entry in pipelines" :key="entry.path">
+                <option :value="entry.path" x-text="entry.name"></option>
+              </template>
+            </select>
+          </div>
+
+          <div class="space-y-1">
+            <label for="brief-footage" class="block text-sm font-medium text-slate-200">Footage index</label>
+            <select
+              id="brief-footage"
+              required
+              x-model="footage_index_path"
+              :disabled="loadingOptions || footageIndexes.length === 0"
+              class="w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 disabled:opacity-60"
+            >
+              <option value="" disabled selected x-text="loadingOptions ? 'Loading footage indexes\u2026' : (footageIndexes.length === 0 ? 'No footage indexes available' : 'Select a footage index\u2026')"></option>
+              <template x-for="entry in footageIndexes" :key="entry.path">
+                <option :value="entry.path" x-text="footageLabel(entry)"></option>
+              </template>
+            </select>
+          </div>
+
+          <div class="flex items-center gap-3 pt-2">
+            <!--
+              The Run (Queue job) button stays disabled while:
+                - the form is loading / invalid (briefBuilder.canSubmit())
+                - OR a job is already active in the shared root scope.
+              The `currentJobId` check means a user who manually navigates
+              back to the brief view while a pipeline is running can't
+              double-submit — matching the US-005 AC that the Run button
+              is disabled while a job is active.
+            -->
+            <button
+              type="submit"
+              :disabled="!canSubmit() || !!currentJobId"
+              aria-label="Queue pipeline job"
+              class="rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/60 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+            >
+              <span x-show="!submitting">Run</span>
+              <span x-show="submitting">Queuing&hellip;</span>
+            </button>
+            <span x-show="submitting" class="text-sm text-slate-400" aria-live="polite">Submitting brief&hellip;</span>
+            <span x-show="currentJobId && !submitting" class="text-sm text-slate-400" aria-live="polite">
+              A job is already running. Watch it on the Progress tab.
+            </span>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <section x-show="view === 'progress'" class="space-y-6">
+      <!--
+        Pipeline progress dashboard (US-005).
+
+        `progressView()` opens the WebSocket and owns run state. It reads
+        `currentJobId` from the shared root scope (Alpine nested-component
+        scope inheritance) and mirrors it into its own `jobId` via x-init
+        so its `$watch('jobId', ...)` can react to job changes — including
+        a second run after the user goes back and submits another brief.
+
+        Alpine v3 calls `progressView().init()` automatically BEFORE
+        `x-init` runs, so the `$watch('jobId', ...)` registration is
+        already live by the time we assign `jobId = currentJobId`. Calling
+        `init()` explicitly in `x-init` would register the watch twice
+        and leak a second WebSocket per job.
+      -->
+      <div
+        x-data="progressView()"
+        x-init="jobId = currentJobId"
+        x-effect="jobId = currentJobId"
+        class="space-y-6"
+      >
+        <header class="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-semibold">Pipeline Progress</h2>
+            <p class="text-slate-400">
+              <template x-if="jobId">
+                <span>
+                  Watching job <span class="font-mono text-slate-200" x-text="jobId"></span>
+                </span>
+              </template>
+              <template x-if="!jobId">
+                <span>No job is running. Submit a brief to start one.</span>
+              </template>
+            </p>
+          </div>
+
+          <!--
+            Terminal-state badge (spinner while running, check on success,
+            X on failure). Uses role="status" + aria-live="polite" so
+            screen readers announce state transitions without interrupting
+            the user mid-thought.
+          -->
+          <div role="status" aria-live="polite" class="flex items-center gap-2 text-sm">
+            <template x-if="isRunning()">
+              <span class="flex items-center gap-2 text-emerald-300">
+                <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-opacity="0.25"></circle>
+                  <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path>
+                </svg>
+                <span x-text="status === 'connecting' ? 'Connecting\u2026' : 'Running\u2026'"></span>
+              </span>
+            </template>
+            <template x-if="isCompleted()">
+              <span class="flex items-center gap-2 text-emerald-300">
+                <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fill-rule="evenodd" d="M16.704 5.29a1 1 0 0 1 .007 1.414l-7.5 7.6a1 1 0 0 1-1.42.01l-3.5-3.5a1 1 0 1 1 1.414-1.414l2.79 2.79 6.793-6.886a1 1 0 0 1 1.416-.013Z" clip-rule="evenodd" />
+                </svg>
+                <span>Completed</span>
+              </span>
+            </template>
+            <template x-if="isFailed()">
+              <span class="flex items-center gap-2 text-red-300">
+                <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 0 1 1.414 0L10 8.586l4.293-4.293a1 1 0 1 1 1.414 1.414L11.414 10l4.293 4.293a1 1 0 0 1-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 0 1-1.414-1.414L8.586 10 4.293 5.707a1 1 0 0 1 0-1.414Z" clip-rule="evenodd" />
+                </svg>
+                <span>Failed</span>
+              </span>
+            </template>
+          </div>
+        </header>
+
+        <!--
+          Step indicator (Director → TrimRefiner → Editor → Reviewer).
+          Rendered via x-for over the stepNames array so adding a step in
+          the future only requires editing the component, not the markup.
+          Each step's visual state comes from `stepState(index)` — one of
+          "pending" / "active" / "done" / "failed" — and drives a tailwind
+          class swap. The x-for index is 0-based, matching the runner's
+          `enumerate(manifest.steps)` step numbering — see progress.js
+          STEP_NAMES for the display-label mapping.
+        -->
+        <ol class="flex flex-wrap items-center gap-2" role="list" aria-label="Pipeline steps">
+          <template x-for="(name, index) in stepNames" :key="name">
+            <li class="flex items-center gap-2">
+              <div
+                class="flex items-center gap-2 rounded border px-3 py-1.5 text-sm"
+                :class="{
+                  'border-emerald-500 bg-emerald-950/60 text-emerald-200 ring-2 ring-emerald-500/40': stepState(index) === 'active',
+                  'border-emerald-700 bg-emerald-900/30 text-emerald-300': stepState(index) === 'done',
+                  'border-slate-700 bg-slate-900/50 text-slate-400': stepState(index) === 'pending',
+                  'border-red-700 bg-red-950/60 text-red-200': stepState(index) === 'failed',
+                }"
+                :aria-current="stepState(index) === 'active' ? 'step' : null"
+              >
+                <!-- Circle / check / spinner prefix to show state visually -->
+                <template x-if="stepState(index) === 'done'">
+                  <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                    <path fill-rule="evenodd" d="M16.704 5.29a1 1 0 0 1 .007 1.414l-7.5 7.6a1 1 0 0 1-1.42.01l-3.5-3.5a1 1 0 1 1 1.414-1.414l2.79 2.79 6.793-6.886a1 1 0 0 1 1.416-.013Z" clip-rule="evenodd" />
+                  </svg>
+                </template>
+                <template x-if="stepState(index) === 'active'">
+                  <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-opacity="0.25"></circle>
+                    <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path>
+                  </svg>
+                </template>
+                <template x-if="stepState(index) === 'failed'">
+                  <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                    <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 0 1 1.414 0L10 8.586l4.293-4.293a1 1 0 1 1 1.414 1.414L11.414 10l4.293 4.293a1 1 0 0 1-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 0 1-1.414-1.414L8.586 10 4.293 5.707a1 1 0 0 1 0-1.414Z" clip-rule="evenodd" />
+                  </svg>
+                </template>
+                <template x-if="stepState(index) === 'pending'">
+                  <span class="inline-block h-2 w-2 rounded-full bg-slate-600" aria-hidden="true"></span>
+                </template>
+                <span class="font-medium" x-text="name"></span>
+              </div>
+              <template x-if="index < stepNames.length - 1">
+                <span class="text-slate-600" aria-hidden="true">&rarr;</span>
+              </template>
+            </li>
+          </template>
+        </ol>
+
+        <!--
+          Error banner for the failed path. Renders the server's error
+          message plus the last 10 progress lines for context. The full
+          log stays visible below, per the US-005 AC.
+        -->
+        <template x-if="isFailed()">
+          <div role="alert" class="space-y-2 rounded border border-red-700 bg-red-950/60 px-4 py-3 text-sm text-red-200">
+            <p class="font-semibold">Pipeline failed</p>
+            <p x-text="error"></p>
+            <template x-if="entries.length > 0">
+              <div>
+                <p class="mt-2 text-xs uppercase tracking-wide text-red-300/80">Last <span x-text="Math.min(entries.length, 10)"></span> log lines</p>
+                <ul class="mt-1 space-y-0.5 font-mono text-xs text-red-100/90">
+                  <template x-for="(entry, idx) in tailLines(10)" :key="idx + ':' + entry.timestamp">
+                    <li x-text="entry.line"></li>
+                  </template>
+                </ul>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <!--
+          Live log panel. Terminal-style scrolling container with
+          auto-scroll via $refs.logPane from progress.js. `aria-live="polite"`
+          gives AT users a chance to hear progress without interruption.
+          Rendered unconditionally (not inside an x-if) so the element's
+          ref stays stable across message arrivals.
+        -->
+        <div class="space-y-2">
+          <div class="flex items-center justify-between text-sm text-slate-400">
+            <span>Progress log</span>
+            <span x-show="entries.length > 0">
+              <span x-text="entries.length"></span> line<span x-show="entries.length !== 1">s</span>
+            </span>
+          </div>
+          <div
+            x-ref="logPane"
+            role="log"
+            aria-live="polite"
+            aria-label="Pipeline progress log"
+            class="h-72 overflow-y-auto rounded border border-slate-800 bg-slate-950 p-3 font-mono text-xs text-slate-300 shadow-inner"
+          >
+            <template x-if="entries.length === 0 && !jobId">
+              <p class="text-slate-500">No log yet. Submit a brief to start a pipeline run.</p>
+            </template>
+            <template x-if="entries.length === 0 && jobId">
+              <p class="text-slate-500">Waiting for the first progress line&hellip;</p>
+            </template>
+            <template x-for="(entry, idx) in entries" :key="idx + ':' + entry.timestamp">
+              <div class="whitespace-pre-wrap break-words">
+                <span class="text-slate-600" x-text="entry.timestamp ? '[' + entry.timestamp + '] ' : ''"></span>
+                <span x-text="entry.line"></span>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!--
+          Video player + review summary. Nested inside progressView so the
+          child's scope inherits `videoSrc`, `result`, `status`, etc. Only
+          rendered once the pipeline completes to avoid a broken <video>
+          flicker during the running state.
+        -->
+        <template x-if="isCompleted()">
+          <!--
+            videoPlayer() exposes an `init()` lifecycle hook that Alpine
+            v3 auto-invokes on mount — no explicit `x-init` needed, and
+            adding one would register the $watch('videoSrc') handler
+            twice.
+          -->
+          <div x-data="videoPlayer()" class="space-y-4">
+            <h3 class="text-lg font-semibold">Rendered video</h3>
+            <template x-if="hasVideo()">
+              <video
+                :src="videoSrc"
+                controls
+                preload="metadata"
+                @error="onVideoError()"
+                class="w-full rounded border border-slate-800 bg-black shadow-lg"
+                aria-label="Rendered pipeline output"
+              ></video>
+            </template>
+            <template x-if="!hasVideo()">
+              <div role="alert" class="rounded border border-amber-700 bg-amber-950/60 px-4 py-3 text-sm text-amber-200">
+                Video unavailable &mdash; the pipeline did not return a playable
+                <code>final_video_path</code>. Check the log above for details.
+              </div>
+            </template>
+
+            <template x-if="hasReview()">
+              <div class="space-y-2">
+                <h4 class="text-sm font-semibold uppercase tracking-wide text-slate-400">Reviewer scores</h4>
+                <dl class="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                  <template x-for="dim in dimensions" :key="dim.key">
+                    <div class="rounded border border-slate-800 bg-slate-900/60 px-3 py-2">
+                      <dt class="text-xs uppercase tracking-wide text-slate-500" x-text="dim.label"></dt>
+                      <dd class="mt-1 font-mono text-lg tabular-nums text-slate-100" x-text="reviewValue(dim.key)"></dd>
+                    </div>
+                  </template>
+                </dl>
+                <template x-if="result && result.review && result.review.feedback">
+                  <p class="text-sm text-slate-400" x-text="result.review.feedback"></p>
+                </template>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <section x-show="view === 'review'" class="space-y-6">
+      <!--
+        Reviewer scorecard (US-006).
+
+        `reviewChart()` fetches GET /api/jobs/{job_id}/review on demand
+        and lazy-builds a Chart.js radar over the 5 ReviewScore dimensions.
+        It reads `promotedJobId` (not `currentJobId`) from the shared root
+        scope and mirrors it into its own `jobId` via x-init/x-effect.
+
+        Why `promotedJobId` and not `currentJobId`: progressView clears
+        `currentJobId` on terminal state to re-enable the Run button, so
+        mirroring `currentJobId` here would wipe the Review tab exactly
+        when the completed review first becomes available, and the user
+        would only ever see the running-job 409 "no review yet" state.
+        `promotedJobId` is set once per brief-builder submit and is never
+        cleared (see the brief-builder x-effect above and the comment in
+        progress.js::_clearRootJobId), so the Review tab stays pointed at
+        the last submitted job across the entire session.
+
+        As with progress.js, Alpine v3 calls `init()` on the component
+        automatically, so an explicit `x-init="init()"` would
+        double-register the $watch and refetch every job twice.
+      -->
+      <div
+        x-data="reviewChart()"
+        x-init="jobId = promotedJobId; activeView = view"
+        x-effect="jobId = promotedJobId; activeView = view"
+        class="space-y-6"
+      >
+        <header class="space-y-1">
+          <h2 class="text-xl font-semibold">Review</h2>
+          <p class="text-slate-400">
+            <template x-if="jobId">
+              <span>
+                Scores for job <span class="font-mono text-slate-200" x-text="jobId"></span>
+              </span>
+            </template>
+            <template x-if="!jobId">
+              <span>No review yet. Run a pipeline to see quality scores.</span>
+            </template>
+          </p>
+        </header>
+
+        <!-- Loading banner. -->
+        <template x-if="loading">
+          <div role="status" aria-live="polite" class="rounded border border-slate-800 bg-slate-900/60 px-4 py-3 text-sm text-slate-300">
+            Loading review&hellip;
+          </div>
+        </template>
+
+        <!-- Empty state: job exists but has no review yet (409 or null review). -->
+        <template x-if="!loading && jobId && noReviewYet">
+          <div role="status" aria-live="polite" class="rounded border border-amber-700 bg-amber-950/60 px-4 py-3 text-sm text-amber-200">
+            No review yet for this job. The pipeline may still be running, or it failed before the reviewer step.
+          </div>
+        </template>
+
+        <!-- Error banner for 404 / network / parse failures. -->
+        <template x-if="!loading && error">
+          <div role="alert" class="rounded border border-red-700 bg-red-950/60 px-4 py-3 text-sm text-red-200" x-text="error"></div>
+        </template>
+
+        <!-- Main state: radar chart + feedback card + optional history. -->
+        <template x-if="!loading && hasReview()">
+          <div class="space-y-6">
+            <!--
+              Sized wrapper for the Chart.js canvas. Chart.js responsive
+              mode requires a parent with a fixed size -- without it the
+              canvas can grow unbounded on every layout tick. h-80 gives
+              it a stable 20rem height, and max-w-md keeps the radar
+              square-ish on wide screens.
+            -->
+            <div class="relative mx-auto h-80 w-full max-w-md">
+              <canvas
+                x-ref="canvas"
+                role="img"
+                aria-label="Review score radar chart"
+                class="max-w-md mx-auto"
+              ></canvas>
+            </div>
+
+            <!-- Score value cards (screen-reader friendly fallback for the radar). -->
+            <dl class="grid grid-cols-2 gap-2 sm:grid-cols-5">
+              <template x-for="dim in dimensions" :key="dim.key">
+                <div class="rounded border border-slate-800 bg-slate-900/60 px-3 py-2">
+                  <dt class="text-xs uppercase tracking-wide text-slate-500" x-text="dim.label"></dt>
+                  <dd class="mt-1 font-mono text-lg tabular-nums text-slate-100" x-text="dimensionValue(dim.key)"></dd>
+                </div>
+              </template>
+            </dl>
+
+            <!-- Reviewer feedback card. -->
+            <template x-if="review && review.feedback">
+              <div class="space-y-2 rounded border border-slate-800 bg-slate-900/60 px-4 py-3">
+                <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-400">Reviewer feedback</h3>
+                <p class="whitespace-pre-wrap text-sm text-slate-200" x-text="review.feedback"></p>
+              </div>
+            </template>
+
+            <!--
+              Retry history. Only renders when retries_used > 0 so the
+              common "one-shot review" case stays uncluttered. Uses a
+              native <details>/<summary> so collapse works without any
+              extra JS plumbing -- the Alpine root doesn't care.
+            -->
+            <template x-if="hasHistory()">
+              <details class="rounded border border-slate-800 bg-slate-900/60 px-4 py-3 text-sm text-slate-200">
+                <summary class="cursor-pointer font-semibold text-slate-300">
+                  History
+                  <span class="ml-2 rounded bg-slate-800 px-2 py-0.5 text-xs font-normal tabular-nums text-slate-400">
+                    <span x-text="retriesUsed"></span> retr<span x-text="retriesUsed === 1 ? 'y' : 'ies'"></span>
+                  </span>
+                </summary>
+                <ol class="mt-3 space-y-3">
+                  <template x-for="(entry, idx) in feedbackHistory" :key="idx">
+                    <li class="rounded border border-slate-800 bg-slate-950/60 px-3 py-2">
+                      <p class="text-xs uppercase tracking-wide text-slate-500">
+                        Attempt <span x-text="idx + 1"></span>
+                      </p>
+                      <p class="mt-1 whitespace-pre-wrap text-sm text-slate-200" x-text="entry"></p>
+                    </li>
+                  </template>
+                </ol>
+              </details>
+            </template>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <section x-show="view === 'chat'" class="space-y-6">
+      <!--
+        Chat feedback refinement (US-007).
+
+        `chatView()` seeds itself from the shared root scope's
+        `promotedJobId` (with `currentJobId` as a fallback) so the user
+        who just finished a brief-builder run can immediately start
+        iterating on it. It owns its own `currentJobId` (the latest
+        completed cut in this chat session), `inFlightJobId` (the live
+        re-run being streamed), `versions` (every render produced), and
+        `transcript` (chronological chat history). It speaks to
+        `POST /api/jobs/{id}/feedback` + `/ws/jobs/{new-id}` directly and
+        does NOT mutate the root scope -- switching renders via the
+        version dropdown flips chatView's local `activeVersionId` only.
+
+        As with the other Alpine components, `init()` is called
+        automatically on mount -- do NOT add an explicit `x-init="init()"`
+        or the internal watchers will register twice.
+
+        The `x-effect` below is how we forward the parent root scope's
+        `promotedJobId` / `currentJobId` into chatView. Inside a nested
+        component's `init()`, `this` does NOT walk the parent scope chain
+        (Alpine 3 limitation, see alpinejs/alpine#1711), so we cannot read
+        `this.promotedJobId` from the chatView factory. `x-effect`
+        expressions, however, run with the full merged scope, so
+        `promotedJobId` / `currentJobId` resolve to the root scope values
+        and we push them into the component via `seedFromRoot(...)` on
+        every change. The method is idempotent: it only resets when a
+        NEW job id arrives.
+      -->
+      <div
+        x-data="chatView()"
+        x-effect="seedFromRoot(promotedJobId, currentJobId)"
+        class="space-y-6"
+      >
+        <header class="space-y-1">
+          <h2 class="text-xl font-semibold">Chat feedback</h2>
+          <p class="text-slate-400">
+            Describe changes and we'll re-run the pipeline with your direction.
+            <template x-if="rootJobId">
+              <span>
+                Seeded from job
+                <span class="font-mono text-slate-200" x-text="rootJobId"></span>.
+              </span>
+            </template>
+            <template x-if="!rootJobId">
+              <span>Submit a brief first to start a chat session.</span>
+            </template>
+          </p>
+        </header>
+
+        <!-- Empty state: no root job yet. -->
+        <template x-if="!rootJobId && !loadingInitial">
+          <div role="status" aria-live="polite" class="rounded border border-slate-800 bg-slate-900/60 px-4 py-3 text-sm text-slate-400">
+            No chat session yet. Run a pipeline job from the Brief tab, then come back here to refine it.
+          </div>
+        </template>
+
+        <!-- Loading state while we fetch the initial job. -->
+        <template x-if="loadingInitial">
+          <div role="status" aria-live="polite" class="rounded border border-slate-800 bg-slate-900/60 px-4 py-3 text-sm text-slate-300">
+            Loading chat session&hellip;
+          </div>
+        </template>
+
+        <!-- Main chat panel: only rendered once a root job is seeded. -->
+        <template x-if="rootJobId">
+          <div class="grid gap-6 lg:grid-cols-5">
+            <!--
+              Left column: video player + version picker + review scores
+              for the currently selected version. Wider than the chat
+              column so the video has breathing room on large screens;
+              collapses to a single column on narrow viewports.
+            -->
+            <div class="space-y-4 lg:col-span-3">
+              <div class="space-y-3">
+                <div class="flex items-center justify-between gap-2">
+                  <h3 class="text-lg font-semibold">Rendered video</h3>
+                  <!-- Version picker. Only renders when >1 version exists. -->
+                  <template x-if="versions.length > 1">
+                    <label class="flex items-center gap-2 text-sm text-slate-400">
+                      <span>Version</span>
+                      <select
+                        :value="activeVersionId"
+                        @change="selectVersion($event.target.value)"
+                        class="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+                        aria-label="Select render version"
+                      >
+                        <template x-for="version in versions" :key="version.jobId">
+                          <option :value="version.jobId" x-text="version.label"></option>
+                        </template>
+                      </select>
+                    </label>
+                  </template>
+                </div>
+
+                <template x-if="hasActiveVideo()">
+                  <video
+                    :src="activeVideoUrl()"
+                    controls
+                    preload="metadata"
+                    @error="onVideoError()"
+                    class="w-full rounded border border-slate-800 bg-black shadow-lg"
+                    aria-label="Rendered pipeline output"
+                  ></video>
+                </template>
+                <template x-if="!hasActiveVideo()">
+                  <div role="alert" class="rounded border border-amber-700 bg-amber-950/60 px-4 py-3 text-sm text-amber-200">
+                    Video unavailable for the selected version. Check the progress log below or pick a different version.
+                  </div>
+                </template>
+              </div>
+
+              <!-- Review score summary cards for the active version. -->
+              <template x-if="hasActiveReview()">
+                <div class="space-y-2">
+                  <h4 class="text-sm font-semibold uppercase tracking-wide text-slate-400">Reviewer scores</h4>
+                  <dl class="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                    <template x-for="dim in dimensions" :key="dim.key">
+                      <div class="rounded border border-slate-800 bg-slate-900/60 px-3 py-2">
+                        <dt class="text-xs uppercase tracking-wide text-slate-500" x-text="dim.label"></dt>
+                        <dd class="mt-1 font-mono text-lg tabular-nums text-slate-100" x-text="scoreValue(dim.key)"></dd>
+                      </div>
+                    </template>
+                  </dl>
+                </div>
+              </template>
+
+              <!--
+                In-flight re-run indicator. Rendered when a feedback
+                re-run is streaming so the user can see the 4-step
+                progress and the live log lines without leaving the chat
+                panel.
+              -->
+              <template x-if="isInFlight() || progressStatus === 'failed'">
+                <div class="space-y-3 rounded border border-slate-800 bg-slate-900/60 px-4 py-3">
+                  <div class="flex items-center justify-between text-sm text-slate-300">
+                    <div class="flex items-center gap-2">
+                      <template x-if="progressStatus === 'running'">
+                        <span class="flex items-center gap-2 text-emerald-300">
+                          <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-opacity="0.25"></circle>
+                            <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path>
+                          </svg>
+                          <span>Running feedback re-run&hellip;</span>
+                        </span>
+                      </template>
+                      <template x-if="progressStatus === 'failed'">
+                        <span class="flex items-center gap-2 text-red-300">
+                          <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                            <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 0 1 1.414 0L10 8.586l4.293-4.293a1 1 0 1 1 1.414 1.414L11.414 10l4.293 4.293a1 1 0 0 1-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 0 1-1.414-1.414L8.586 10 4.293 5.707a1 1 0 0 1 0-1.414Z" clip-rule="evenodd" />
+                          </svg>
+                          <span>Re-run failed</span>
+                        </span>
+                      </template>
+                    </div>
+                    <template x-if="inFlightJobId">
+                      <span class="font-mono text-xs text-slate-500" x-text="inFlightJobId"></span>
+                    </template>
+                  </div>
+
+                  <!-- Step indicator for the 4 feedback-rerun steps. -->
+                  <ol class="flex flex-wrap items-center gap-2" role="list" aria-label="Feedback re-run steps">
+                    <template x-for="(name, index) in stepNames" :key="name">
+                      <li class="flex items-center gap-2">
+                        <div
+                          class="flex items-center gap-1.5 rounded border px-2 py-1 text-xs"
+                          :class="{
+                            'border-emerald-500 bg-emerald-950/60 text-emerald-200 ring-2 ring-emerald-500/40': stepState(index) === 'active',
+                            'border-emerald-700 bg-emerald-900/30 text-emerald-300': stepState(index) === 'done',
+                            'border-slate-700 bg-slate-900/50 text-slate-400': stepState(index) === 'pending',
+                            'border-red-700 bg-red-950/60 text-red-200': stepState(index) === 'failed',
+                          }"
+                          :aria-current="stepState(index) === 'active' ? 'step' : null"
+                        >
+                          <template x-if="stepState(index) === 'done'">
+                            <svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                              <path fill-rule="evenodd" d="M16.704 5.29a1 1 0 0 1 .007 1.414l-7.5 7.6a1 1 0 0 1-1.42.01l-3.5-3.5a1 1 0 1 1 1.414-1.414l2.79 2.79 6.793-6.886a1 1 0 0 1 1.416-.013Z" clip-rule="evenodd" />
+                            </svg>
+                          </template>
+                          <template x-if="stepState(index) === 'active'">
+                            <svg class="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                              <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-opacity="0.25"></circle>
+                              <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path>
+                            </svg>
+                          </template>
+                          <template x-if="stepState(index) === 'failed'">
+                            <svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                              <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 0 1 1.414 0L10 8.586l4.293-4.293a1 1 0 1 1 1.414 1.414L11.414 10l4.293 4.293a1 1 0 0 1-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 0 1-1.414-1.414L8.586 10 4.293 5.707a1 1 0 0 1 0-1.414Z" clip-rule="evenodd" />
+                            </svg>
+                          </template>
+                          <template x-if="stepState(index) === 'pending'">
+                            <span class="inline-block h-1.5 w-1.5 rounded-full bg-slate-600" aria-hidden="true"></span>
+                          </template>
+                          <span class="font-medium" x-text="name"></span>
+                        </div>
+                        <template x-if="index < stepNames.length - 1">
+                          <span class="text-slate-600" aria-hidden="true">&rarr;</span>
+                        </template>
+                      </li>
+                    </template>
+                  </ol>
+
+                  <!-- Live log pane for the in-flight re-run. -->
+                  <div
+                    x-ref="chatLogPane"
+                    role="log"
+                    aria-live="polite"
+                    aria-label="Feedback re-run log"
+                    class="h-40 overflow-y-auto rounded border border-slate-800 bg-slate-950 p-2 font-mono text-[11px] leading-snug text-slate-300 shadow-inner"
+                  >
+                    <template x-if="progressLines.length === 0">
+                      <p class="text-slate-500">Waiting for the first progress line&hellip;</p>
+                    </template>
+                    <template x-for="(entry, idx) in progressLines" :key="idx + ':' + entry.timestamp">
+                      <div class="whitespace-pre-wrap break-words">
+                        <span class="text-slate-600" x-text="entry.timestamp ? '[' + entry.timestamp + '] ' : ''"></span>
+                        <span x-text="entry.line"></span>
+                      </div>
+                    </template>
+                  </div>
+
+                  <template x-if="progressStatus === 'failed' && errorMessage">
+                    <p role="alert" class="text-xs text-red-300" x-text="errorMessage"></p>
+                  </template>
+                </div>
+              </template>
+            </div>
+
+            <!--
+              Right column: chat transcript + message input. Scrollable
+              transcript with chronological messages (user, system, error)
+              styled distinctively so the conversation stays readable as
+              the history grows.
+            -->
+            <div class="space-y-3 lg:col-span-2">
+              <h3 class="text-lg font-semibold">Conversation</h3>
+
+              <div
+                class="max-h-[32rem] min-h-[16rem] space-y-3 overflow-y-auto rounded border border-slate-800 bg-slate-900/40 p-3"
+                role="log"
+                aria-live="polite"
+                aria-label="Chat transcript"
+              >
+                <template x-if="transcript.length === 0">
+                  <p class="text-sm text-slate-500">No messages yet. Describe a change to start iterating.</p>
+                </template>
+
+                <template x-for="entry in transcript" :key="entry.id">
+                  <div :class="{
+                    'flex justify-end': entry.role === 'user',
+                    'flex justify-start': entry.role !== 'user',
+                  }">
+                    <!-- User message: right-aligned, emerald. -->
+                    <template x-if="entry.role === 'user'">
+                      <div class="max-w-[85%] rounded-lg border border-emerald-700 bg-emerald-950/60 px-3 py-2 text-sm text-emerald-100">
+                        <p class="whitespace-pre-wrap break-words" x-text="entry.text"></p>
+                      </div>
+                    </template>
+
+                    <!-- System message: left-aligned, slate. May include a jump-to-version link. -->
+                    <template x-if="entry.role === 'system'">
+                      <div class="max-w-[85%] rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-slate-200">
+                        <p class="whitespace-pre-wrap break-words" x-text="entry.text"></p>
+                        <template x-if="entry.jobId && entry.videoUrl">
+                          <button
+                            type="button"
+                            class="mt-2 text-xs text-emerald-300 underline hover:text-emerald-200"
+                            @click="selectVersion(entry.jobId)"
+                            :aria-label="'Switch player to job ' + entry.jobId"
+                          >
+                            Play this render
+                          </button>
+                        </template>
+                      </div>
+                    </template>
+
+                    <!-- Error message: left-aligned, red. -->
+                    <template x-if="entry.role === 'error'">
+                      <div class="max-w-[85%] rounded-lg border border-red-700 bg-red-950/60 px-3 py-2 text-sm text-red-100">
+                        <p class="whitespace-pre-wrap break-words" x-text="entry.text"></p>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+              </div>
+
+              <!-- Message input + send button. -->
+              <form class="space-y-2" @submit.prevent="sendFeedback()" novalidate>
+                <label for="chat-message" class="sr-only">Feedback message</label>
+                <textarea
+                  id="chat-message"
+                  x-model="message"
+                  rows="3"
+                  :disabled="isInFlight() || !currentJobId"
+                  placeholder="Describe a change -- e.g. 'Make the opening shot punchier and shorten the outro.'"
+                  class="w-full resize-y rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 disabled:opacity-60"
+                  aria-label="Chat feedback message"
+                ></textarea>
+                <div class="flex items-center justify-between gap-3">
+                  <span class="text-xs text-slate-500" aria-live="polite">
+                    <template x-if="isInFlight()">
+                      <span class="flex items-center gap-1 text-emerald-300">
+                        <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                          <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-opacity="0.25"></circle>
+                          <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path>
+                        </svg>
+                        <span>Running&hellip;</span>
+                      </span>
+                    </template>
+                    <template x-if="!isInFlight() && currentJobId">
+                      <span>Feedback will target job <span class="font-mono text-slate-400" x-text="currentJobId"></span>.</span>
+                    </template>
+                  </span>
+                  <button
+                    type="submit"
+                    :disabled="!canSend()"
+                    aria-label="Send chat feedback"
+                    class="rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/60 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                  >
+                    <span x-show="!isInFlight()">Send</span>
+                    <span x-show="isInFlight()">Running&hellip;</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <section x-show="view === 'timeline'" class="space-y-4">
+      <!--
+        EditPlan timeline viewer (US-008).
+
+        `timelineView()` fetches GET /api/jobs/{job_id}/edit-plan on
+        demand and renders a horizontally-scrolling card strip, one
+        card per EditPlanEntry. It reads `promotedJobId` (not
+        `currentJobId`) from the shared root scope for the same reason
+        the Review tab does: progressView clears `currentJobId` on
+        terminal state, so mirroring it here would wipe the timeline
+        exactly when the completed edit plan first becomes available.
+
+        As with review-chart, Alpine v3 calls `init()` on the component
+        automatically, so an explicit `x-init="init()"` would
+        double-register the $watch and refetch every plan twice.
+      -->
+      <!--
+        US-009 extends the US-008 timeline with pointed edit controls
+        (trim, reorder, overlay, delete, shot swap, save). The edit
+        surface lives on the same Alpine component so local mutations
+        can write straight into the plan.entries array without a
+        sibling-scope bus. We merge editControls() into timelineView()
+        via Object.assign and host the shot-browser modal inside the
+        same scope so its `swapTarget` reads land on the parent.
+      -->
+      <div
+        x-data="Object.assign(timelineView(), editControls(), reRenderControls())"
+        x-init="jobId = promotedJobId; activeView = view"
+        x-effect="jobId = promotedJobId; activeView = view; if (jobId) seedOriginalRender()"
+        class="space-y-4"
+      >
+        <header class="flex flex-wrap items-baseline justify-between gap-3">
+          <h2 class="text-xl font-semibold">Timeline</h2>
+          <template x-if="plan">
+            <div class="flex flex-wrap items-center gap-3 text-sm text-slate-400">
+              <span>
+                Total duration:
+                <span class="font-mono tabular-nums text-slate-100" x-text="formatTime(plan.total_duration)"></span>
+              </span>
+              <span>
+                Entries:
+                <span class="font-mono tabular-nums text-slate-100" x-text="plan.entry_count"></span>
+              </span>
+              <!-- Edit / Save / Cancel buttons -->
+              <template x-if="!editing">
+                <button
+                  type="button"
+                  class="rounded bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
+                  @click="enterEditMode()"
+                >Edit plan</button>
+              </template>
+              <template x-if="editing">
+                <span class="flex items-center gap-2">
+                  <button
+                    type="button"
+                    class="rounded bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
+                    :disabled="saving || !dirty || hasAnyError()"
+                    @click="savePlan()"
+                  >
+                    <span x-show="!saving">Save</span>
+                    <span x-show="saving">Saving&hellip;</span>
+                  </button>
+                  <!--
+                    Re-render button (US-010). Visible whenever the
+                    user is in edit mode AND either the plan has
+                    unsaved changes OR a render is currently in flight.
+                    The `|| rendering` clause keeps the button mounted
+                    after savePlan() clears `dirty`, so the in-flight
+                    "Rendering…" label has a chance to display and the
+                    button doesn't visually vanish mid-click.
+                    PUT-then-POST is fully encapsulated in
+                    `triggerReRender()` -- the button just delegates.
+                  -->
+                  <template x-if="dirty || rendering">
+                    <button
+                      type="button"
+                      class="rounded bg-indigo-600 px-3 py-1 text-xs font-semibold text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+                      :disabled="!canReRender()"
+                      @click="triggerReRender()"
+                    >
+                      <span x-show="!rendering">Re-render</span>
+                      <span x-show="rendering">Rendering&hellip;</span>
+                    </button>
+                  </template>
+                  <button
+                    type="button"
+                    class="rounded bg-slate-700 px-3 py-1 text-xs font-semibold text-slate-100 hover:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-60"
+                    :disabled="saving || rendering"
+                    @click="cancelEdit()"
+                  >Cancel</button>
+                  <span
+                    x-show="dirty"
+                    class="rounded-full bg-amber-900/60 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-200"
+                  >Unsaved</span>
+                </span>
+              </template>
+              <span
+                x-show="saveFlash"
+                x-text="saveFlash"
+                class="rounded-full bg-emerald-900/60 px-2 py-0.5 text-[10px] uppercase tracking-wide text-emerald-200"
+              ></span>
+            </div>
+          </template>
+        </header>
+
+        <!-- Plan-level edit errors (network, positions, generic 422). -->
+        <template x-if="planErrors.length > 0">
+          <ul role="alert" class="space-y-1 rounded border border-red-700 bg-red-950/60 px-4 py-3 text-sm text-red-200">
+            <template x-for="(msg, i) in planErrors" :key="i">
+              <li x-text="msg"></li>
+            </template>
+          </ul>
+        </template>
+
+        <!--
+          US-010: Re-render error banner. Distinct from `planErrors` so
+          a save-vs-render failure can be told apart at a glance. Cleared
+          when the next re-render is kicked off.
+        -->
+        <template x-if="renderError">
+          <div role="alert" class="rounded border border-red-700 bg-red-950/60 px-4 py-3 text-sm text-red-200" x-text="renderError"></div>
+        </template>
+
+        <!--
+          US-010: Re-render progress log + video player + version
+          dropdown + Review button. Only renders once at least one
+          render exists for this session OR a re-render is in flight,
+          so the timeline view stays clean for users who never click
+          "Edit plan". The whole block lives above the timeline cards
+          so the user can see the new render without scrolling.
+        -->
+        <template x-if="hasAnyRender() || rendering">
+          <section class="space-y-3 rounded border border-slate-800 bg-slate-900/40 p-4">
+            <header class="flex flex-wrap items-center justify-between gap-3">
+              <div class="flex items-center gap-3">
+                <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-300">Renders</h3>
+                <template x-if="rendering">
+                  <span class="flex items-center gap-2 text-xs text-emerald-300" role="status" aria-live="polite">
+                    <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-opacity="0.25"></circle>
+                      <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path>
+                    </svg>
+                    <span>Re-rendering&hellip;</span>
+                  </span>
+                </template>
+              </div>
+              <div class="flex items-center gap-2">
+                <!--
+                  Version dropdown (US-010 AC: previous renders preserved,
+                  version list shows all renders for this session). Only
+                  renders when there is more than one entry so the common
+                  "first render only" case stays uncluttered. Mirrors the
+                  chat.js version picker shape.
+                -->
+                <template x-if="renders.length > 1">
+                  <label class="flex items-center gap-2 text-xs text-slate-400">
+                    <span>Version</span>
+                    <select
+                      :value="String(activeRenderIndex)"
+                      @change="selectRender($event.target.value)"
+                      class="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+                      aria-label="Select render version"
+                    >
+                      <template x-for="(entry, idx) in renders" :key="entry.job_id || idx">
+                        <option :value="String(idx)" x-text="entry.label"></option>
+                      </template>
+                    </select>
+                  </label>
+                </template>
+
+                <!--
+                  Review button (US-010 AC: optional Review button POSTs
+                  /api/jobs/{id}/review-only and updates the radar chart).
+                  Disabled while a reviewer-only run is already in flight
+                  or no render exists yet to score.
+                -->
+                <button
+                  type="button"
+                  class="rounded bg-amber-600 px-3 py-1 text-xs font-semibold text-white hover:bg-amber-500 disabled:cursor-not-allowed disabled:opacity-60"
+                  :disabled="!canReviewOnly()"
+                  @click="triggerReviewOnly()"
+                  aria-label="Run reviewer on the active render"
+                >
+                  <span x-show="!reviewing">Review</span>
+                  <span x-show="reviewing">Reviewing&hellip;</span>
+                </button>
+
+                <!--
+                  Collapse / expand toggle for the inline progress log.
+                  Defaults to open while a render is in flight (set in
+                  triggerReRender) and is otherwise user-controlled.
+                -->
+                <template x-if="renderProgressLines.length > 0 || rendering">
+                  <button
+                    type="button"
+                    class="rounded bg-slate-700 px-2 py-1 text-[11px] font-semibold text-slate-100 hover:bg-slate-600"
+                    @click="renderProgressOpen = !renderProgressOpen"
+                    :aria-expanded="renderProgressOpen ? 'true' : 'false'"
+                  >
+                    <span x-show="!renderProgressOpen">Show log</span>
+                    <span x-show="renderProgressOpen">Hide log</span>
+                  </button>
+                </template>
+              </div>
+            </header>
+
+            <!-- Reviewer-only error banner. Distinct from renderError. -->
+            <template x-if="reviewError">
+              <div role="alert" class="rounded border border-red-700 bg-red-950/60 px-3 py-2 text-xs text-red-200" x-text="reviewError"></div>
+            </template>
+
+            <!--
+              Active render video player. Always rendered when any
+              render exists so the user can scrub the latest render
+              without leaving the Timeline tab. Reassigning :src to a
+              new URL is sufficient to make the browser load the new
+              file (matches the chat.js + video-player.js pattern in
+              this same template).
+            -->
+            <template x-if="hasAnyRender() && activeRenderVideoUrl()">
+              <div class="space-y-1">
+                <video
+                  :src="activeRenderVideoUrl()"
+                  controls
+                  preload="metadata"
+                  class="w-full rounded border border-slate-800 bg-black shadow-lg"
+                  :aria-label="'Render: ' + (activeRender() ? activeRender().label : '')"
+                ></video>
+                <p class="text-[11px] text-slate-500">
+                  Showing
+                  <span class="text-slate-300" x-text="activeRender() ? activeRender().label : ''"></span>
+                  <template x-if="activeRender() && activeRender().job_id">
+                    <span>
+                      &middot;
+                      <span class="font-mono" x-text="activeRender().job_id"></span>
+                    </span>
+                  </template>
+                </p>
+              </div>
+            </template>
+
+            <!--
+              Inline progress log for the in-flight render. Reuses the
+              same role="log" + aria-live pattern as progress.js so AT
+              users hear new lines as they stream.
+            -->
+            <template x-if="renderProgressOpen && (renderProgressLines.length > 0 || rendering)">
+              <div
+                x-ref="renderLogPane"
+                role="log"
+                aria-live="polite"
+                aria-label="Re-render progress log"
+                class="h-48 overflow-y-auto rounded border border-slate-800 bg-slate-950 p-2 font-mono text-[11px] leading-snug text-slate-300 shadow-inner"
+              >
+                <template x-if="renderProgressLines.length === 0">
+                  <p class="text-slate-500">Waiting for the first progress line&hellip;</p>
+                </template>
+                <template x-for="(entry, idx) in renderProgressLines" :key="idx + ':' + entry.timestamp">
+                  <div class="whitespace-pre-wrap break-words">
+                    <span class="text-slate-600" x-text="entry.timestamp ? '[' + entry.timestamp + '] ' : ''"></span>
+                    <span x-text="entry.line"></span>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </section>
+        </template>
+
+        <!-- Sticky "thumbnails may be stale" banner after reorders. -->
+        <template x-if="editing && thumbnailsStale">
+          <p class="rounded border border-amber-700 bg-amber-950/60 px-4 py-2 text-xs text-amber-200">
+            Thumbnails shown reflect the last rendered clip order and may be stale until the pipeline reruns.
+          </p>
+        </template>
+
+        <!-- Empty state: no job promoted yet. -->
+        <template x-if="!jobId">
+          <p class="text-slate-400">Submit a brief first to see its edit plan.</p>
+        </template>
+
+        <!-- Loading banner. -->
+        <template x-if="jobId && loading">
+          <p role="status" aria-live="polite" class="text-slate-400">Loading edit plan&hellip;</p>
+        </template>
+
+        <!-- Empty state: job exists but has no edit plan yet (409). -->
+        <template x-if="jobId && !loading && noPlanYet">
+          <p role="status" aria-live="polite" class="rounded border border-amber-700 bg-amber-950/60 px-4 py-3 text-sm text-amber-200">
+            No edit plan yet for this job. The pipeline may still be running, or it failed before the editor step.
+          </p>
+        </template>
+
+        <!-- Error banner for 404 / network / parse failures on GET. -->
+        <template x-if="jobId && !loading && error">
+          <p role="alert" class="rounded border border-red-700 bg-red-950/60 px-4 py-3 text-sm text-red-200" x-text="error"></p>
+        </template>
+
+        <!-- Empty plan (rare: plan exists but no entries). -->
+        <template x-if="jobId && !loading && !error && !noPlanYet && plan && plan.entry_count === 0">
+          <p class="text-slate-400">No entries in this edit plan.</p>
+        </template>
+
+        <!-- Timeline strip: horizontally-scrolling card list. -->
+        <template x-if="jobId && !loading && !error && !noPlanYet && plan && plan.entry_count > 0">
+          <div class="overflow-x-auto">
+            <ol class="flex gap-4 pb-4" role="list" aria-label="Edit plan timeline">
+              <template x-for="(entry, entryIndex) in plan.entries" :key="entry.position">
+                <li
+                  class="flex w-72 shrink-0 flex-col rounded-lg bg-slate-800/60 shadow-sm ring-1 ring-slate-700"
+                  :class="cardClasses(entry.roll_type)"
+                  :draggable="editing"
+                  @dragstart="dragStart($event, entryIndex)"
+                  @dragover="dragOver($event)"
+                  @drop="drop($event, entryIndex)"
+                >
+                  <img
+                    :src="entry.thumbnail_url"
+                    :alt="'Thumbnail for position ' + entry.position"
+                    loading="lazy"
+                    class="h-36 w-full rounded-t-lg bg-slate-900 object-cover"
+                    onerror="this.style.visibility='hidden'"
+                  />
+                  <div class="flex items-center justify-between px-3 pt-3">
+                    <span class="text-xs font-semibold text-slate-400">#<span x-text="entry.position"></span></span>
+                    <span
+                      class="rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide"
+                      :class="rollBadgeClasses(entry.roll_type)"
+                      x-text="entry.roll_type"
+                    ></span>
+                  </div>
+                  <p
+                    class="truncate px-3 pt-1 font-mono text-xs text-slate-300"
+                    :title="entry.shot_id"
+                    x-text="entry.display_label"
+                  ></p>
+
+                  <!-- Read-only mode: existing US-008 metadata strip. -->
+                  <template x-if="!editing">
+                    <div>
+                      <dl class="grid grid-cols-3 gap-2 px-3 py-2 text-[11px] text-slate-400">
+                        <div>
+                          <dt class="uppercase tracking-wide">Start</dt>
+                          <dd class="font-mono tabular-nums text-slate-200" x-text="formatTime(entry.start_trim)"></dd>
+                        </div>
+                        <div>
+                          <dt class="uppercase tracking-wide">End</dt>
+                          <dd class="font-mono tabular-nums text-slate-200" x-text="formatTime(entry.end_trim)"></dd>
+                        </div>
+                        <div>
+                          <dt class="uppercase tracking-wide">Dur</dt>
+                          <dd class="font-mono tabular-nums text-slate-200" x-text="formatTime(entry.duration)"></dd>
+                        </div>
+                      </dl>
+                      <template x-if="entry.text_overlay">
+                        <p class="border-t border-slate-700/60 px-3 py-2 text-xs italic text-slate-300" x-text="entry.text_overlay"></p>
+                      </template>
+                    </div>
+                  </template>
+
+                  <!-- Edit mode: editable trim / overlay / action buttons. -->
+                  <template x-if="editing">
+                    <div class="space-y-2 border-t border-slate-700/60 px-3 py-3 text-xs text-slate-300">
+                      <!-- Drag handle hint + duration readout. -->
+                      <div class="flex items-center justify-between">
+                        <span class="cursor-move text-[10px] uppercase tracking-wide text-slate-500">Drag to reorder</span>
+                        <span class="font-mono tabular-nums text-slate-400">
+                          Dur <span class="text-slate-200" x-text="formatTime(entry.duration)"></span>
+                        </span>
+                      </div>
+
+                      <!-- start_trim input -->
+                      <label class="block">
+                        <span class="text-[10px] uppercase tracking-wide text-slate-500">Start trim</span>
+                        <input
+                          type="number"
+                          step="0.1"
+                          :min="shotStartBound(entry)"
+                          :max="shotEndBound(entry)"
+                          class="mt-1 w-full rounded bg-slate-900 px-2 py-1 font-mono tabular-nums text-slate-100 ring-1 ring-slate-700 focus:outline-none focus:ring-emerald-500"
+                          :class="entryError(entry.position, 'start_trim') ? 'ring-red-500' : ''"
+                          :value="entry.start_trim"
+                          @input="setStartTrim(entry, $event.target.value)"
+                        />
+                        <template x-if="entryError(entry.position, 'start_trim')">
+                          <p class="mt-1 text-[10px] text-red-300" x-text="entryError(entry.position, 'start_trim')"></p>
+                        </template>
+                      </label>
+
+                      <!-- end_trim input -->
+                      <label class="block">
+                        <span class="text-[10px] uppercase tracking-wide text-slate-500">End trim</span>
+                        <input
+                          type="number"
+                          step="0.1"
+                          :min="shotStartBound(entry)"
+                          :max="shotEndBound(entry)"
+                          class="mt-1 w-full rounded bg-slate-900 px-2 py-1 font-mono tabular-nums text-slate-100 ring-1 ring-slate-700 focus:outline-none focus:ring-emerald-500"
+                          :class="entryError(entry.position, 'end_trim') ? 'ring-red-500' : ''"
+                          :value="entry.end_trim"
+                          @input="setEndTrim(entry, $event.target.value)"
+                        />
+                        <template x-if="entryError(entry.position, 'end_trim')">
+                          <p class="mt-1 text-[10px] text-red-300" x-text="entryError(entry.position, 'end_trim')"></p>
+                        </template>
+                      </label>
+
+                      <!-- text_overlay input -->
+                      <label class="block">
+                        <span class="text-[10px] uppercase tracking-wide text-slate-500">Text overlay</span>
+                        <input
+                          type="text"
+                          maxlength="120"
+                          placeholder="(none)"
+                          class="mt-1 w-full rounded bg-slate-900 px-2 py-1 italic text-slate-100 ring-1 ring-slate-700 focus:outline-none focus:ring-emerald-500"
+                          :class="entryError(entry.position, 'text_overlay') ? 'ring-red-500' : ''"
+                          :value="entry.text_overlay == null ? '' : entry.text_overlay"
+                          @input="setTextOverlay(entry, $event.target.value)"
+                        />
+                        <template x-if="entryError(entry.position, 'text_overlay')">
+                          <p class="mt-1 text-[10px] text-red-300" x-text="entryError(entry.position, 'text_overlay')"></p>
+                        </template>
+                      </label>
+
+                      <!-- Per-entry "shot_id" error (from 422 when swap lands on a ghost) -->
+                      <template x-if="entryError(entry.position, 'shot_id')">
+                        <p class="text-[10px] text-red-300" x-text="entryError(entry.position, 'shot_id')"></p>
+                      </template>
+
+                      <!-- Action buttons: swap / delete -->
+                      <div class="flex gap-2 pt-1">
+                        <button
+                          type="button"
+                          class="flex-1 rounded bg-slate-700 px-2 py-1 text-[11px] font-semibold text-slate-100 hover:bg-slate-600"
+                          @click="openSwapModal(entry.position)"
+                        >Swap shot</button>
+                        <button
+                          type="button"
+                          class="flex-1 rounded bg-red-900/70 px-2 py-1 text-[11px] font-semibold text-red-100 hover:bg-red-800"
+                          @click="deleteEntry(entry.position)"
+                        >Delete</button>
+                      </div>
+                    </div>
+                  </template>
+                </li>
+              </template>
+            </ol>
+          </div>
+        </template>
+
+        <!--
+          Shot-browser modal (US-009). Nested inside the timeline
+          x-data so its `shotBrowser()` scope can reach the parent's
+          `swapTarget` + `jobFootageIndexPath` via `$root` -- Alpine's
+          nested component access pattern. The modal is only rendered
+          into the DOM while `swapTarget !== -1`, so the ESC listener
+          and fetch race-protection live in the component's lifecycle
+          hooks rather than as toplevel guards.
+        -->
+        <template x-if="swapTarget !== -1">
+          <div
+            x-data="shotBrowser()"
+            x-init="swapTargetLocal = swapTarget; footagePath = jobFootageIndexPath"
+            x-effect="swapTargetLocal = swapTarget; footagePath = jobFootageIndexPath"
+            class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/80 px-4 py-12"
+            @click.self="closeSwapModal()"
+            @keydown.escape.window="closeSwapModal()"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="shot-browser-title"
+          >
+            <div class="w-full max-w-2xl rounded-lg bg-slate-900 ring-1 ring-slate-700">
+              <header class="flex items-center justify-between border-b border-slate-700/60 px-4 py-3">
+                <h3 id="shot-browser-title" class="text-sm font-semibold text-slate-100">
+                  Swap shot at position <span class="font-mono tabular-nums" x-text="swapTargetLocal"></span>
+                </h3>
+                <button
+                  type="button"
+                  class="rounded bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
+                  @click="closeSwapModal()"
+                >Close</button>
+              </header>
+              <div class="space-y-3 px-4 py-3">
+                <label class="block">
+                  <span class="sr-only">Search footage</span>
+                  <input
+                    type="text"
+                    placeholder="Search footage (description, transcript, filename)"
+                    class="w-full rounded bg-slate-950 px-3 py-2 text-sm text-slate-100 ring-1 ring-slate-700 focus:outline-none focus:ring-emerald-500"
+                    :value="query"
+                    @input="onInput($event)"
+                    autofocus
+                  />
+                </label>
+                <template x-if="loading">
+                  <p class="text-xs text-slate-400">Searching&hellip;</p>
+                </template>
+                <template x-if="!loading && error">
+                  <p role="alert" class="rounded border border-red-700 bg-red-950/60 px-3 py-2 text-xs text-red-200" x-text="error"></p>
+                </template>
+                <template x-if="!loading && !error && hasSearched && results.length === 0">
+                  <p class="text-xs text-slate-400">No matches.</p>
+                </template>
+                <template x-if="!loading && !error && !hasSearched">
+                  <p class="text-xs text-slate-500">Type a query to search the footage index.</p>
+                </template>
+                <template x-if="!loading && results.length > 0">
+                  <ul class="max-h-96 space-y-2 overflow-y-auto" role="list">
+                    <template x-for="shot in results" :key="shot.shot_id">
+                      <li>
+                        <button
+                          type="button"
+                          class="flex w-full flex-col gap-1 rounded bg-slate-800/60 px-3 py-2 text-left ring-1 ring-slate-700 hover:bg-slate-800 hover:ring-emerald-500"
+                          @click="applyShotSwap(shot)"
+                        >
+                          <div class="flex items-center justify-between gap-2">
+                            <span class="truncate font-mono text-xs text-slate-200" x-text="shot.display_label"></span>
+                            <span
+                              class="shrink-0 rounded-full bg-emerald-900/60 px-2 py-0.5 text-[10px] font-semibold text-emerald-200"
+                              x-text="formatRelevance(shot.relevance_score)"
+                            ></span>
+                          </div>
+                          <div class="flex items-center gap-2 text-[10px] uppercase tracking-wide text-slate-500">
+                            <span x-text="shot.roll_type"></span>
+                            <span>&middot;</span>
+                            <span class="font-mono">
+                              <span x-text="Number(shot.start_time).toFixed(1)"></span>s
+                              &ndash;
+                              <span x-text="Number(shot.end_time).toFixed(1)"></span>s
+                            </span>
+                          </div>
+                          <template x-if="shot.description">
+                            <p class="text-[11px] text-slate-300" x-text="snippet(shot.description, 120)"></p>
+                          </template>
+                          <template x-if="shot.transcript">
+                            <p class="text-[11px] italic text-slate-400" x-text="snippet(shot.transcript, 120)"></p>
+                          </template>
+                        </button>
+                      </li>
+                    </template>
+                  </ul>
+                </template>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

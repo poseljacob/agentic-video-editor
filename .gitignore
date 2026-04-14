@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Environment
+.env
+
+# Footage & output
+test_footage/
+output/
+
+# Next.js / Node
+node_modules/
+.next/
+out/
+src/web/studio/.next/
+src/web/studio/out/
+src/web/studio/node_modules/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.file-locks.json

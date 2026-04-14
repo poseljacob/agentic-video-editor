@@ -1,0 +1,50 @@
+name: dtc-testimonial
+description: >-
+  DTC brand testimonial ad — hook into problem, then solution, social proof,
+  and a closing CTA. Total runtime sums to 30s to match the default brief
+  duration. Loaded by src.agents.director.load_style_skill via yaml.safe_load
+  and surfaced to the Director model verbatim, so every field below is
+  guidance the Director must honor when building the EditPlan.
+structure:
+  - segment: hook
+    duration_seconds: 3
+    guidance: >-
+      Open with the highest-energy or most visually striking clip available.
+      The first 3 seconds must stop the scroll — lead with a reaction,
+      product close-up, or on-camera question.
+  - segment: problem
+    duration_seconds: 5
+    guidance: >-
+      Name the pain point the product solves. Prefer on-camera narration or
+      relatable b-roll that shows the friction.
+  - segment: solution
+    duration_seconds: 10
+    guidance: >-
+      Show the product in use delivering the payoff. This is the longest
+      beat — let the hero shot breathe.
+  - segment: social_proof
+    duration_seconds: 7
+    guidance: >-
+      Testimonial, review quote, or reaction shot from a real customer.
+      Prefer clips where the speaker names a specific outcome.
+  - segment: cta
+    duration_seconds: 5
+    guidance: >-
+      Clear call to action with the product name. Pair with an on-screen
+      text overlay containing the CTA copy.
+text_overlay:
+  position: bottom-third
+  notes: >-
+    Use text_overlay on hook and cta entries. Keep copy under six words so
+    it reads on mobile. Apply sparingly on other beats.
+music:
+  mood: warm, authentic, low-key
+  notes: >-
+    Pick a music track with a gentle build so energy rises into the
+    solution beat. Avoid aggressive EDM or abrasive percussion — this
+    style is a trust-building format, not a hype reel.
+pacing:
+  notes: >-
+    Alternate energy: high (hook) → medium (problem) → high (solution) →
+    medium (social_proof) → high (cta). Never stack three low-energy
+    beats in a row.

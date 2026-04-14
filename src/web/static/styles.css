@@ -1,0 +1,12 @@
+/* AVE Studio — supplemental styles.
+ * Tailwind CDN (loaded via index.html) handles the bulk of styling.
+ * Add project-specific overrides or custom animations here as the UI grows.
+ */
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}

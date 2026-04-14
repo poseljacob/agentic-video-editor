@@ -1,0 +1,71 @@
+@import "tailwindcss";
+
+:root {
+  --background: #0a0a0a;
+  --foreground: #e2e8f0;
+  --surface: #111318;
+  --surface-hover: #1a1d24;
+  --border: #1e293b;
+  --border-hover: #334155;
+  --accent: #10b981;
+  --accent-hover: #059669;
+  --muted: #64748b;
+  --destructive: #ef4444;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-hover: var(--surface-hover);
+  --color-border: var(--border);
+  --color-border-hover: var(--border-hover);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-muted: var(--muted);
+  --color-destructive: var(--destructive);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+}
+
+/* Resizable panel handles */
+[data-separator="horizontal"] {
+  width: 4px;
+  background: var(--border);
+  transition: background 150ms;
+  cursor: col-resize;
+}
+[data-separator="horizontal"]:hover {
+  background: var(--accent);
+}
+[data-separator="vertical"] {
+  height: 4px;
+  background: var(--border);
+  transition: background 150ms;
+  cursor: row-resize;
+}
+[data-separator="vertical"]:hover {
+  background: var(--accent);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-hover);
+}
