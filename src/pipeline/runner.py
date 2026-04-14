@@ -41,6 +41,7 @@ Logging is plain ``print()`` to stdout to match the rest of the project
 from __future__ import annotations
 
 import asyncio
+import shutil
 import sys
 import time
 from dataclasses import dataclass, field
@@ -591,6 +592,28 @@ def _summarize_reviewer(review: ReviewScore | None) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Versioned video saves
+# --------------------------------------------------------------------------- #
+
+
+def _save_version(video_path: str | None, iteration: int) -> None:
+    """Copy a rendered video to a versioned file so retries don't overwrite it.
+
+    Creates ``output/final/{slug}_v0.mp4``, ``_v1.mp4``, etc. alongside
+    the main render. This lets users compare each iteration and see if
+    the reviewer feedback loop is improving or degrading quality.
+    """
+    if not video_path:
+        return
+    src = Path(video_path)
+    if not src.exists():
+        return
+    versioned = src.with_stem(f"{src.stem}_v{iteration}")
+    shutil.copy2(str(src), str(versioned))
+    _log(f"[pipeline] saved version: {versioned.name}")
+
+
+# --------------------------------------------------------------------------- #
 # Main entrypoint
 # --------------------------------------------------------------------------- #
 
@@ -749,6 +772,8 @@ def run_pipeline(
             result.final_video_path = _with_transient_retry(
                 run_editor, result.edit_plan, footage_index_path
             )
+            # Save versioned copy so retries don't overwrite the original
+            _save_version(result.final_video_path, 0)
             _log_step_end(
                 step.agent,
                 time.monotonic() - t0,
@@ -799,6 +824,8 @@ def run_pipeline(
                 result.final_video_path = _with_transient_retry(
                     run_editor, result.edit_plan, footage_index_path
                 )
+                # Save versioned copy of retry render
+                _save_version(result.final_video_path, result.retries_used)
                 result.review = _with_transient_retry(
                     run_reviewer, brief, result.final_video_path
                 )
