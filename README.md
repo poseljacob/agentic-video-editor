@@ -1,8 +1,10 @@
 # Agentic Video Editor
 
-AI-powered video editor that turns raw footage and a creative brief into a polished ad. Point it at a folder of clips, describe what you want, and an ensemble of AI agents handles the rest -- scene detection, shot selection, assembly, and quality review.
+A command-line AI video editor that turns raw footage and a creative brief into a polished ad. Point `ave` at a folder of clips, describe what you want, and an ensemble of AI agents handles the rest -- scene detection, shot selection, assembly, and quality review.
 
 Built with Google Gemini for intelligence and FFmpeg for rendering.
+
+> **Status:** The CLI is the primary, supported interface. A web UI (AVE Studio) is included but is a **work in progress** -- see [Web UI](#web-ui-work-in-progress) below.
 
 ## How It Works
 
@@ -40,7 +42,6 @@ Pipelines are defined as YAML manifests in `pipelines/`. Each step names an agen
 # pipelines/ugc-ad.yaml
 steps:
   - agent: director
-    gate: human_approval        # pause for human review (web UI only)
   - agent: trim_refiner
   - agent: editor
   - agent: reviewer
@@ -51,53 +52,24 @@ steps:
       feedback_target: director # send reviewer feedback back to director
 ```
 
+Each retry iteration is saved as `{name}_v{N}.mp4` so you can compare versions.
+
 ### Style Templates
 
 Style files in `styles/` give the Director structured guidance -- segment durations, pacing rules, text overlay placement, and music mood. The included `dtc-testimonial.yaml` defines a 30-second DTC ad structure (hook, problem, solution, social proof, CTA).
-
-## Architecture
-
-```
-src/
-  agents/        -- Director, Editor, Reviewer, TrimRefiner (Google ADK)
-  models/        -- Pydantic schemas (CreativeBrief, Shot, EditPlan, ReviewScore)
-  pipeline/      -- Preprocessing (scene detection + transcription) and pipeline runner
-  tools/         -- Gemini tool functions (analyze footage, render, captions)
-  web/
-    app.py       -- FastAPI backend (REST API + WebSocket)
-    routes/      -- API endpoints (jobs, projects, footage, feedback, etc.)
-    jobs.py      -- Background job registry
-    studio/      -- Next.js frontend (NLE-style editor UI)
-```
-
-### Web UI (AVE Studio)
-
-The frontend is a Next.js app styled as a traditional non-linear editor:
-
-- **Project Picker** -- create projects by pointing at any folder of video files
-- **Source Monitor** -- preview individual clips from the media browser
-- **Program Monitor** -- watch the final rendered output
-- **Timeline** -- drag-to-reorder clips, view roll types, durations
-- **Media Browser** -- searchable shot catalog with roll-type filters
-- **Inspector** -- trim controls, text overlays, transitions, review radar chart
-- **Console** -- real-time pipeline progress via WebSocket
-- **Chat Panel** -- send feedback to trigger revision iterations
-
-**Tech stack:** Next.js 16, React 19, TypeScript, Tailwind CSS 4, Zustand, dnd-kit, Recharts, Lucide icons.
 
 ## Setup
 
 ### Prerequisites
 
 - Python 3.11+
-- Node.js 18+ and pnpm
 - FFmpeg installed and on PATH
 - A [Google AI API key](https://aistudio.google.com/apikey) (for Gemini)
 
-### 1. Clone and install Python dependencies
+### 1. Clone and install
 
 ```bash
-git clone https://github.com/yourusername/agentic-video-editor.git
+git clone https://github.com/poseljacob/agentic-video-editor.git
 cd agentic-video-editor
 
 python -m venv .venv
@@ -119,15 +91,7 @@ cp .env.example .env
 # Edit .env and add your Google AI API key
 ```
 
-### 3. Install the frontend
-
-```bash
-cd src/web/studio
-pnpm install
-cd ../../..
-```
-
-### 4. Verify FFmpeg
+### 3. Verify FFmpeg
 
 ```bash
 ffmpeg -version
@@ -137,10 +101,11 @@ If not installed: `brew install ffmpeg` (macOS), `apt install ffmpeg` (Ubuntu), 
 
 ## Usage
 
-### CLI
+The primary interface is the `ave` CLI. A single command takes you from raw footage to a finished cut.
+
+### Basic run
 
 ```bash
-# Preprocess footage (scene detection + transcription)
 ave edit \
   --footage-dir /path/to/your/footage \
   --brief '{"product": "My Product", "audience": "Women 25-45", "tone": "authentic", "duration_seconds": 30}' \
@@ -154,48 +119,15 @@ The brief can also be a path to a JSON file:
 ave edit --footage-dir ./footage --brief brief.json
 ```
 
-### Web UI
+### What happens on a run
 
-Start both the backend and frontend:
+1. **Preprocess** -- scans your footage folder, detects scenes, transcribes speech, and writes a `footage_index.json`. Cached between runs.
+2. **Director** -- searches the index and produces an `EditPlan` (ordered shots with trim points and text overlays).
+3. **Trim Refiner** -- tightens each cut.
+4. **Editor** -- renders the plan to MP4 via FFmpeg/MoviePy.
+5. **Reviewer** -- scores the output across 5 dimensions; if below threshold, loops back to the Director with feedback.
 
-```bash
-# Terminal 1: FastAPI backend
-source .venv/bin/activate
-uvicorn src.web.app:app --reload --port 8000
-
-# Terminal 2: Next.js frontend
-cd src/web/studio
-pnpm dev --port 3000
-```
-
-Open http://localhost:3000, create a project by browsing to a footage folder, and run a pipeline.
-
-### API
-
-The FastAPI backend exposes a full REST API at `http://localhost:8000`:
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/projects` | GET/POST | List or create projects |
-| `/api/projects/{id}` | GET/DELETE | Get or delete a project |
-| `/api/browse?path=` | GET | Browse filesystem directories |
-| `/api/jobs` | GET/POST | List jobs or start a pipeline run |
-| `/api/jobs/{id}` | GET | Get job status and result |
-| `/api/jobs/{id}/edit-plan` | GET/PUT | Read or update the edit plan |
-| `/api/jobs/{id}/feedback` | POST | Submit feedback for revision |
-| `/api/jobs/{id}/re-render` | POST | Re-render with modified edit plan |
-| `/api/jobs/{id}/review-only` | POST | Run reviewer on existing output |
-| `/api/footage/catalog` | GET | List all indexed shots |
-| `/api/footage/search` | GET | Semantic search across footage |
-| `/ws/jobs/{id}` | WS | Real-time pipeline progress stream |
-
-### Running Tests
-
-```bash
-pytest tests/
-```
-
-## Configuration
+Output lands in `output/` with versioned copies for each retry iteration.
 
 ### Creative Brief Schema
 
@@ -241,6 +173,53 @@ Available agents: `director`, `trim_refiner`, `editor`, `reviewer`.
 
 Create a YAML file in `styles/` with segment structure, text overlay rules, music mood, and pacing guidance. See `styles/dtc-testimonial.yaml` for the full format.
 
+### Running Tests
+
+```bash
+pytest tests/
+```
+
+## Architecture
+
+```
+src/
+  main.py        -- CLI entry point (`ave edit`)
+  agents/        -- Director, Editor, Reviewer, TrimRefiner (Google ADK)
+  models/        -- Pydantic schemas (CreativeBrief, Shot, EditPlan, ReviewScore)
+  pipeline/      -- Preprocessing (scene detection + transcription) and pipeline runner
+  tools/         -- Gemini tool functions (analyze footage, render, captions)
+  web/           -- Optional FastAPI backend + Next.js frontend (work in progress)
+```
+
+## Web UI (Work In Progress)
+
+An experimental web UI, **AVE Studio**, lives in `src/web/`. It wraps the same pipeline behind a FastAPI backend and a Next.js frontend styled as a traditional non-linear editor (project picker, source/program monitors, drag-and-drop timeline, media browser, inspector, review radar chart).
+
+**This is pre-alpha and not the recommended way to use the project yet.** Expect rough edges, missing features, and breaking changes. The CLI is the supported path.
+
+If you want to try it anyway:
+
+```bash
+# Prerequisites: Node.js 18+ and pnpm
+
+# Install frontend deps
+cd src/web/studio
+pnpm install
+cd ../../..
+
+# Terminal 1: FastAPI backend
+source .venv/bin/activate
+uvicorn src.web.app:app --reload --port 8000
+
+# Terminal 2: Next.js frontend
+cd src/web/studio
+pnpm dev --port 3000
+```
+
+Then open http://localhost:3000.
+
+The backend exposes a REST API at `http://localhost:8000` (jobs, projects, footage, feedback, edit plan CRUD) plus a `/ws/jobs/{id}` WebSocket for real-time progress. See `src/web/routes/` for the full endpoint list.
+
 ## Project Structure
 
 ```
@@ -257,18 +236,11 @@ agentic-video-editor/
     models/             # Pydantic data models
     pipeline/           # Preprocessing + pipeline runner
     tools/              # Gemini tool functions
-    web/
+    web/                # Experimental web UI (WIP)
       app.py            # FastAPI application
       jobs.py           # Background job registry
       routes/           # REST API endpoints
       studio/           # Next.js frontend
-        src/
-          app/          # Pages (project picker, editor)
-          components/   # UI components
-          stores/       # Zustand state management
-          hooks/        # WebSocket streaming
-          lib/          # API client, utilities
-          types/        # TypeScript schemas
   tests/                # Test suite
 ```
 

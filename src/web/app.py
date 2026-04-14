@@ -1,9 +1,9 @@
 """FastAPI application for AVE Studio.
 
-Serves the Alpine.js + Tailwind UI shell, exposes a health endpoint, and
-mounts static + media directories for the browser to consume. Also owns the
-in-memory :class:`~src.web.jobs.JobRegistry` that runs pipeline executions
-as sequential background tasks (US-002).
+Exposes the REST + WebSocket API and serves rendered media files. The
+frontend is a standalone Next.js app (see ``src/web/studio/``). Also owns
+the in-memory :class:`~src.web.jobs.JobRegistry` that runs pipeline
+executions as sequential background tasks.
 """
 
 from contextlib import asynccontextmanager
@@ -12,7 +12,6 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.web.jobs import JobRegistry
@@ -27,7 +26,6 @@ from src.web.routes.render import router as render_router
 from src.web.routes.ws import router as ws_router
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-STATIC_DIR = Path(__file__).resolve().parent / "static"
 OUTPUT_DIR = REPO_ROOT / "output"
 
 # Ensure the media mount target exists before StaticFiles validates it at
@@ -62,13 +60,12 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8000", "http://127.0.0.1:8000", "http://localhost:3000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/media", StaticFiles(directory=OUTPUT_DIR), name="media")
 
 app.include_router(config_router)
@@ -86,9 +83,3 @@ app.include_router(ws_router)
 async def health() -> dict[str, str]:
     """Lightweight liveness probe used by the UI and deploy checks."""
     return {"status": "ok"}
-
-
-@app.get("/")
-async def index() -> FileResponse:
-    """Serve the Alpine.js + Tailwind UI shell."""
-    return FileResponse(STATIC_DIR / "index.html")
