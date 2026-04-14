@@ -16,6 +16,7 @@ interface TimelineState {
   updateEntry: (index: number, patch: Partial<EnrichedEditPlanEntry>) => void;
   reorderEntries: (fromIndex: number, toIndex: number) => void;
   deleteEntry: (index: number) => void;
+  addEntry: (entry: EnrichedEditPlanEntry, atIndex?: number) => void;
   savePlan: (jobId: string) => Promise<void>;
   setPlan: (plan: EnrichedEditPlan | null) => void;
   reset: () => void;
@@ -74,6 +75,19 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
       isDirty: true,
       selectedIndex: selectedIndex === index ? null : selectedIndex,
     });
+  },
+
+  addEntry: (entry, atIndex) => {
+    const { plan } = get();
+    const entries = plan ? [...plan.entries] : [];
+    const insertAt = atIndex ?? entries.length;
+    entries.splice(insertAt, 0, entry);
+    entries.forEach((e, i) => (e.position = i));
+    const totalDuration = entries.reduce((sum, e) => sum + (e.end_trim - e.start_trim), 0);
+    const newPlan: EnrichedEditPlan = plan
+      ? { ...plan, entries, entry_count: entries.length, total_duration: totalDuration }
+      : { job_id: "", entries, entry_count: entries.length, total_duration: totalDuration };
+    set({ plan: newPlan, isDirty: true, selectedIndex: insertAt });
   },
 
   savePlan: async (jobId) => {

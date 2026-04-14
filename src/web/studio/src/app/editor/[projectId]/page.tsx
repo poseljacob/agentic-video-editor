@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { useProjectStore } from "@/stores/projectStore";
 import { useMediaStore } from "@/stores/mediaStore";
@@ -57,6 +57,47 @@ export default function EditorPage() {
 
   // Stream pipeline progress.
   useJobStream(currentJobId);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Skip if user is typing in an input/textarea/select
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+      const timeline = useTimelineStore.getState();
+      const entries = timeline.plan?.entries ?? [];
+
+      switch (e.key) {
+        case "Delete":
+        case "Backspace": {
+          if (timeline.selectedIndex !== null) {
+            e.preventDefault();
+            timeline.deleteEntry(timeline.selectedIndex);
+          }
+          break;
+        }
+        case "ArrowRight": {
+          e.preventDefault();
+          const next = timeline.selectedIndex === null ? 0 : Math.min(entries.length - 1, timeline.selectedIndex + 1);
+          timeline.selectEntry(next);
+          break;
+        }
+        case "ArrowLeft": {
+          e.preventDefault();
+          const prev = timeline.selectedIndex === null ? 0 : Math.max(0, timeline.selectedIndex - 1);
+          timeline.selectEntry(prev);
+          break;
+        }
+        case "Escape": {
+          timeline.selectEntry(null);
+          break;
+        }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   return (
     <div className="h-full flex flex-col">

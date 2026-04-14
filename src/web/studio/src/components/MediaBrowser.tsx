@@ -2,13 +2,35 @@
 
 import { useEffect, useRef, useCallback } from "react";
 import { useMediaStore } from "@/stores/mediaStore";
+import { useTimelineStore } from "@/stores/timelineStore";
 import { useUiStore } from "@/stores/uiStore";
 import { toMediaUrl } from "@/lib/media";
-import { FolderOpen, Search, Loader2 } from "lucide-react";
+import type { ShotSearchResult } from "@/types/api";
+import type { EnrichedEditPlanEntry } from "@/types/api";
+import { FolderOpen, Search, Loader2, Plus } from "lucide-react";
+
+function shotToEntry(shot: ShotSearchResult): EnrichedEditPlanEntry {
+  return {
+    position: 0,
+    shot_id: shot.shot_id,
+    source_file: shot.source_file,
+    source_filename: shot.source_filename,
+    source_timestamp: shot.start_time,
+    display_label: shot.display_label,
+    start_trim: shot.start_time,
+    end_trim: shot.end_time,
+    duration: shot.duration,
+    text_overlay: null,
+    transition: null,
+    roll_type: shot.roll_type,
+    thumbnail_url: "",
+  };
+}
 
 export function MediaBrowser() {
   const { catalog, searchResults, query, filter, loading, fetchCatalog, searchFootage, setQuery, setFilter } =
     useMediaStore();
+  const addEntry = useTimelineStore((s) => s.addEntry);
   const setSourceMonitorSrc = useUiStore((s) => s.setSourceMonitorSrc);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -25,6 +47,14 @@ export function MediaBrowser() {
       }, 200);
     },
     [setQuery, searchFootage],
+  );
+
+  const handleDragStart = useCallback(
+    (e: React.DragEvent, shot: ShotSearchResult) => {
+      e.dataTransfer.setData("application/json", JSON.stringify(shot));
+      e.dataTransfer.effectAllowed = "copy";
+    },
+    [],
   );
 
   const shots = query.trim() ? searchResults : catalog;
@@ -88,18 +118,29 @@ export function MediaBrowser() {
         )}
 
         {filtered.map((shot, i) => (
-          <button
+          <div
             key={`${shot.shot_id}-${i}`}
-            onClick={() => {
-              setSourceMonitorSrc(toMediaUrl(shot.source_file));
-            }}
-            className="w-full text-left px-2 py-2 border-b border-border hover:bg-surface-hover transition-colors"
+            draggable
+            onDragStart={(e) => handleDragStart(e, shot)}
+            className="w-full text-left px-2 py-2 border-b border-border hover:bg-surface-hover transition-colors cursor-grab active:cursor-grabbing group"
           >
             <div className="flex items-center gap-1.5 mb-0.5">
               <span className={`px-1.5 py-0.5 rounded text-[9px] font-medium ${rollBadge(shot.roll_type)}`}>
                 {shot.roll_type}
               </span>
-              <span className="text-xs font-medium truncate">{shot.display_label}</span>
+              <span
+                className="text-xs font-medium truncate flex-1 cursor-pointer hover:text-accent"
+                onClick={() => setSourceMonitorSrc(toMediaUrl(shot.source_file))}
+              >
+                {shot.display_label}
+              </span>
+              <button
+                onClick={() => addEntry(shotToEntry(shot))}
+                className="opacity-0 group-hover:opacity-100 p-0.5 text-muted hover:text-accent transition-all"
+                title="Add to timeline"
+              >
+                <Plus className="w-3.5 h-3.5" />
+              </button>
             </div>
             <p className="text-[10px] text-muted truncate">
               {shot.duration.toFixed(1)}s
@@ -110,7 +151,7 @@ export function MediaBrowser() {
                 &ldquo;{shot.transcript.slice(0, 80)}&rdquo;
               </p>
             )}
-          </button>
+          </div>
         ))}
 
         {!loading && filtered.length === 0 && (
