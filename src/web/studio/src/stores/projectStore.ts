@@ -40,8 +40,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   pollProject: async (id) => {
     const project = await api.getProject(id);
+    const existing = get().projects;
+    const found = existing.some((p) => p.id === id);
     set({
-      projects: get().projects.map((p) => (p.id === id ? project : p)),
+      projects: found
+        ? existing.map((p) => (p.id === id ? project : p))
+        : [...existing, project],
     });
     return project;
   },

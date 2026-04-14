@@ -7,7 +7,7 @@ import { useTimelineStore } from "@/stores/timelineStore";
 import { useProjectStore } from "@/stores/projectStore";
 import * as api from "@/lib/api";
 import type { PipelineEntry } from "@/types/api";
-import { X, Loader2 } from "lucide-react";
+import { X, Loader2, ChevronDown, ChevronRight } from "lucide-react";
 
 interface RunPipelineDialogProps {
   projectId: string;
@@ -22,6 +22,7 @@ export function RunPipelineDialog({ projectId }: RunPipelineDialogProps) {
 
   const [pipelines, setPipelines] = useState<PipelineEntry[]>([]);
   const [pipelinePath, setPipelinePath] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [product, setProduct] = useState("");
   const [audience, setAudience] = useState("");
   const [tone, setTone] = useState("energetic");
@@ -45,7 +46,7 @@ export function RunPipelineDialog({ projectId }: RunPipelineDialogProps) {
     try {
       const jobId = await submitJob({
         brief: {
-          product: product || "Product",
+          product: product || project.name || "Product",
           audience: audience || "General",
           tone,
           duration_seconds: duration,
@@ -83,7 +84,7 @@ export function RunPipelineDialog({ projectId }: RunPipelineDialogProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="w-full max-w-md bg-surface border border-border rounded-lg shadow-xl">
+      <div className="w-full max-w-sm bg-surface border border-border rounded-lg shadow-xl">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border">
           <h2 className="text-sm font-semibold">Run Pipeline</h2>
           <button
@@ -96,76 +97,95 @@ export function RunPipelineDialog({ projectId }: RunPipelineDialogProps) {
 
         <div className="p-4 space-y-3 text-xs">
           {/* Pipeline selector */}
-          <label className="block">
-            <span className="text-muted font-medium">Pipeline</span>
-            <select
-              value={pipelinePath}
-              onChange={(e) => setPipelinePath(e.target.value)}
-              className="w-full mt-1 px-2 py-1.5 rounded border border-border bg-background text-foreground focus:outline-none focus:border-accent"
-            >
-              {pipelines.map((p) => (
-                <option key={p.path} value={p.path}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          {/* Brief fields */}
-          <label className="block">
-            <span className="text-muted font-medium">Product</span>
-            <input
-              value={product}
-              onChange={(e) => setProduct(e.target.value)}
-              placeholder="e.g. Energy Drink"
-              className="w-full mt-1 px-2 py-1.5 rounded border border-border bg-background text-foreground focus:outline-none focus:border-accent"
-            />
-          </label>
-
-          <label className="block">
-            <span className="text-muted font-medium">Audience</span>
-            <input
-              value={audience}
-              onChange={(e) => setAudience(e.target.value)}
-              placeholder="e.g. Gen-Z fitness enthusiasts"
-              className="w-full mt-1 px-2 py-1.5 rounded border border-border bg-background text-foreground focus:outline-none focus:border-accent"
-            />
-          </label>
-
-          <div className="flex gap-3">
-            <label className="flex-1 block">
-              <span className="text-muted font-medium">Tone</span>
+          {pipelines.length > 1 && (
+            <label className="block">
+              <span className="text-muted font-medium">Pipeline</span>
               <select
-                value={tone}
-                onChange={(e) => setTone(e.target.value)}
+                value={pipelinePath}
+                onChange={(e) => setPipelinePath(e.target.value)}
                 className="w-full mt-1 px-2 py-1.5 rounded border border-border bg-background text-foreground focus:outline-none focus:border-accent"
               >
-                <option value="energetic">Energetic</option>
-                <option value="calm">Calm</option>
-                <option value="professional">Professional</option>
-                <option value="playful">Playful</option>
-                <option value="dramatic">Dramatic</option>
+                {pipelines.map((p) => (
+                  <option key={p.path} value={p.path}>
+                    {p.name}
+                  </option>
+                ))}
               </select>
             </label>
+          )}
 
-            <label className="flex-1 block">
-              <span className="text-muted font-medium">Duration (s)</span>
-              <input
-                type="number"
-                min={5}
-                max={300}
-                value={duration}
-                onChange={(e) => setDuration(parseInt(e.target.value) || 30)}
-                className="w-full mt-1 px-2 py-1.5 rounded border border-border bg-background text-foreground focus:outline-none focus:border-accent"
-              />
-            </label>
+          {/* Footage info */}
+          <div className="text-[11px] text-muted bg-background/50 rounded p-2.5">
+            <span className="font-medium text-foreground">{project?.name ?? "Project"}</span>
+            <span className="ml-2 text-muted">
+              {project?.shot_count ?? 0} shots
+              {pipelines.length === 1 && (
+                <span> -- {pipelines[0].name} pipeline</span>
+              )}
+            </span>
           </div>
 
-          {/* Footage index info */}
-          <div className="text-[10px] text-muted bg-background/50 rounded p-2">
-            Footage: {project?.footage_index_path ?? "None"}
-            {project && <span className="ml-2">({project.shot_count} shots)</span>}
-          </div>
+          {/* Advanced toggle */}
+          <button
+            onClick={() => setShowAdvanced(!showAdvanced)}
+            className="flex items-center gap-1 text-muted hover:text-foreground transition-colors"
+          >
+            {showAdvanced ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+            <span className="text-[11px]">Advanced options</span>
+          </button>
+
+          {showAdvanced && (
+            <div className="space-y-3 pl-1 border-l-2 border-border ml-1">
+              <label className="block pl-2">
+                <span className="text-muted font-medium">Product</span>
+                <input
+                  value={product}
+                  onChange={(e) => setProduct(e.target.value)}
+                  placeholder={project?.name || "Auto-detected from project"}
+                  className="w-full mt-1 px-2 py-1.5 rounded border border-border bg-background text-foreground focus:outline-none focus:border-accent"
+                />
+              </label>
+
+              <label className="block pl-2">
+                <span className="text-muted font-medium">Audience</span>
+                <input
+                  value={audience}
+                  onChange={(e) => setAudience(e.target.value)}
+                  placeholder="General"
+                  className="w-full mt-1 px-2 py-1.5 rounded border border-border bg-background text-foreground focus:outline-none focus:border-accent"
+                />
+              </label>
+
+              <div className="flex gap-3 pl-2">
+                <label className="flex-1 block">
+                  <span className="text-muted font-medium">Tone</span>
+                  <select
+                    value={tone}
+                    onChange={(e) => setTone(e.target.value)}
+                    className="w-full mt-1 px-2 py-1.5 rounded border border-border bg-background text-foreground focus:outline-none focus:border-accent"
+                  >
+                    <option value="energetic">Energetic</option>
+                    <option value="calm">Calm</option>
+                    <option value="professional">Professional</option>
+                    <option value="playful">Playful</option>
+                    <option value="dramatic">Dramatic</option>
+                  </select>
+                </label>
+
+                <label className="flex-1 block">
+                  <span className="text-muted font-medium">Duration (s)</span>
+                  <input
+                    type="number"
+                    min={5}
+                    max={300}
+                    value={duration}
+                    onChange={(e) => setDuration(parseInt(e.target.value) || 30)}
+                    className="w-full mt-1 px-2 py-1.5 rounded border border-border bg-background text-foreground focus:outline-none focus:border-accent"
+                  />
+                </label>
+              </div>
+            </div>
+          )}
 
           {error && (
             <p className="text-destructive text-[10px]">{error}</p>
