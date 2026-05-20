@@ -230,20 +230,30 @@ def burn_ass_subtitles(video: str, subtitles: str, output: str) -> str:
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    subtitle_path = str(Path(subtitles).resolve()).replace("\\", r"\\").replace(":", r"\:")
+    # Windows: ffmpeg's ass filter mis-parses backslashes and drive-letter
+    # colons. Run with cwd=subtitle's parent dir and pass just the filename.
+    sub_resolved = Path(subtitles).resolve()
+    video_resolved = Path(video).resolve()
+    out_resolved = output_path.resolve()
     cmd = [
         "ffmpeg",
         "-y",
         "-i",
-        video,
+        str(video_resolved),
         "-vf",
-        f"ass={subtitle_path}",
+        f"ass={sub_resolved.name}",
         "-c:a",
         "copy",
-        str(output_path),
+        str(out_resolved),
     ]
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=str(sub_resolved.parent),
+        )
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(f"FFmpeg failed: {exc.stderr}") from exc
     return str(output_path)
