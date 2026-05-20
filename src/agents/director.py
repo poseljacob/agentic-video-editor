@@ -170,10 +170,28 @@ A-Roll entries contribute to total_duration. When planning:
   are obviously strong from description and transcript alone.
 
 ## Workflow
-1. Read the brief and footage_index_path from the user message.
+1. Read the brief and footage_index_path from the user message. The user
+   message ALSO includes a `Shots inventory` block listing every shot in
+   the FootageIndex (source_file, start_time, end_time, transcript
+   snippet). Use this inventory as your source of truth — descriptions in
+   the FootageIndex may be empty, so `search_moments` can return nothing
+   even when shots exist.
+1a. If shots have empty or unhelpful descriptions/transcripts, you MUST
+   call `analyze_footage(video_path=<source_file>, brief=<brief JSON>)`
+   on EVERY unique source_file in the inventory before selecting clips.
+   This produces scene-by-scene descriptions, energy levels, and key
+   quotes that you need to make informed selections. Do not skip this
+   step when descriptions are empty — without it you cannot produce a
+   valid plan.
+1b. After analyze_footage, build EditPlanEntry items referencing the
+   ORIGINAL Shot.source_file and Shot.start_time from the inventory
+   (NOT the scene start_times from analyze_footage). Use start_trim and
+   end_trim to point to the sub-range within that shot that corresponds
+   to the analyze_footage scene you liked.
 2. For each narrative beat (hook, problem, solution, proof, CTA), call
    search_moments with a query that captures that beat. Use a
-   min_relevance around 0.2 and ask for 3 to 5 candidates per beat.
+   min_relevance around 0.0 (descriptions may be empty) and ask for 3 to
+   5 candidates per beat.
 3. Search for B-Roll candidates too: call search_moments with queries
    like "product", "texture", "application", "packaging", "close-up",
    "b-roll". Great ads use a mix of footage types.
@@ -487,6 +505,26 @@ def run_director(
     agent = build_director(brief)
     runner = InMemoryRunner(agent=agent, app_name=_APP_NAME)
 
+    # Load the FootageIndex and inline a Shots inventory into the user
+    # message so the Director can reason about clips even when shot
+    # descriptions are empty (preprocess does not always populate them).
+    from json import loads as _loads
+
+    fi_raw = Path(footage_index_path).read_text(encoding="utf-8")
+    fi_data = _loads(fi_raw)
+    inv_lines: list[str] = []
+    for s in fi_data.get("shots", []):
+        tr = (s.get("transcript") or "").strip().replace("\n", " ")
+        if len(tr) > 200:
+            tr = tr[:200] + "…"
+        inv_lines.append(
+            f"- source_file={s['source_file']} | start_time={s['start_time']} | "
+            f"end_time={s['end_time']} | roll_type={s.get('roll_type','unknown')} | "
+            f"description={s.get('description','') or '(empty)'} | "
+            f"transcript_snippet={tr or '(empty)'}"
+        )
+    inventory = "\n".join(inv_lines) if inv_lines else "(no shots)"
+
     user_message = genai_types.Content(
         role="user",
         parts=[
@@ -496,7 +534,11 @@ def run_director(
                     f"Brief JSON: {brief.model_dump_json()}\n\n"
                     f"Footage index path (use this exact path in tool "
                     f"calls): {footage_index_path}\n\n"
-                    "Produce the EditPlan now."
+                    f"Shots inventory ({len(inv_lines)} shots):\n"
+                    f"{inventory}\n\n"
+                    "If descriptions/transcripts above are empty, call "
+                    "analyze_footage on each unique source_file BEFORE "
+                    "selecting clips. Produce the EditPlan now."
                 )
             )
         ],
